@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>シフト自動計算＆カレンダー</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-800 antialiased pb-12">
+  <div class="max-w-md mx-auto p-4">
+    <header class="text-center mb-6">
+      <h1 class="text-xl font-bold text-gray-900">シフト自動計算＆カレンダー</h1>
+      <p class="text-xs text-gray-500 mt-1">ブラウザで動くシフト最適化ツール</p>
+    </header>
+
+    <!-- メイン操作パネル -->
+    <div class="bg-white rounded-xl shadow-sm p-4 mb-4 space-y-4">
+      <!-- モード選択 -->
+      <div>
+        <label class="block text-xs font-bold text-blue-600 mb-1">■ 動作モード</label>
+        <select id="shiftMode" class="w-full border rounded-lg p-2 text-sm bg-gray-50" onchange="updateSettings()">
+          <option value="ai_optimize">✨ AI最適化シフト作成（アンケート型）</option>
+          <option value="standard">📊 最大勤務時間を調べる（上限月収型）</option>
+        </select>
+      </div>
+
+      <!-- AI最適化オプション -->
+      <div id="aiOptions" class="space-y-3 bg-blue-50 p-3 rounded-lg text-xs">
+        <div>
+          <label class="block font-bold text-blue-800 mb-1">☀️/🌙 希望時間帯</label>
+          <select id="timePreference" class="w-full border rounded-lg p-2 text-sm bg-white" onchange="updateSettings()">
+            <option value="night">🌙 夜メイン（朝6-12時を避ける）</option>
+            <option value="morning">☀️ 朝メイン（午後以降を避ける）</option>
+            <option value="any">⚖️ こだわりなし（おまかせ）</option>
+          </select>
+        </div>
+        <div>
+          <label class="block font-bold text-blue-800 mb-1">🔄 1日の掛け持ち設定</label>
+          <select id="allowMultiplePerDay" class="w-full border rounded-lg p-2 text-sm bg-white" onchange="updateSettings()">
+            <option value="false">NG（1日1社までにする）</option>
+            <option value="true">OK（積極的にする）</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 年月・上限設定 -->
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1">対象年月</label>
+          <div class="flex space-x-1">
+            <input type="number" id="targetYear" class="w-1/2 border rounded p-1 text-sm text-center" onchange="updateSettings()">
+            <span class="self-center">年</span>
+            <input type="number" id="targetMonth" class="w-1/2 border rounded p-1 text-sm text-center" onchange="updateSettings()">
+            <span class="self-center">月</span>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-bold text-gray-600 mb-1">上限月収 (円)</label>
+          <input type="number" id="maxMonthlySalary" placeholder="例: 88000 (0で無制限)" class="w-full border rounded p-1 text-sm" onchange="updateSettings()">
+        </div>
+      </div>
+    </div>
+
+    <!-- 計算実行ボタン -->
+    <button onclick="calculateAndRender()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl shadow transition text-center mb-6">
+      📅 シフトカレンダーを表示する
+    </button>
+
+    <!-- 結果表示エリア -->
+    <div id="resultArea" class="space-y-4"></div>
+  </div>
+
+  <script>
+    let state = {
+      year: 2026,
+      month: 10,
+      maxMonthlySalary: 0,
+      shiftMode: "ai_optimize",
+      timePreference: "night",
+      allowMultiplePerDay: false,
+      jobs: [{ name: "バイトA", wage: 1000, openTime: "06:00", closeTime: "23:00" }],
+      periodTimes: [
+        { name: "1限", start: "09:00", end: "10:30" },
+        { name: "2限", start: "10:40", end: "12:10" },
+        { name: "3限", start: "13:00", end: "14:30" },
+        { name: "4限", start: "14:40", end: "16:10" },
+        { name: "5限", start: "16:20", end: "17:50" }
+      ],
+      offDays: {},
+      timetable: []
+    };
+
+    function loadLocalStorage() {
+      const saved = localStorage.getItem("shift_web_config");
+      if (saved) {
+        try { state = Object.assign({}, state, JSON.parse(saved)); } catch(e){}
+      }
+      document.getElementById("shiftMode").value = state.shiftMode;
+      document.getElementById("timePreference").value = state.timePreference;
+      document.getElementById("allowMultiplePerDay").value = String(state.allowMultiplePerDay);
+      document.getElementById("targetYear").value = state.year;
+      document.getElementById("targetMonth").value = state.month;
+      document.getElementById("maxMonthlySalary").value = state.maxMonthlySalary || "";
+      toggleAiOptions();
+    }
+
+    function saveLocalStorage() {
+      localStorage.setItem("shift_web_config", JSON.stringify(state));
+    }
+
+    function toggleAiOptions() {
+      const aiOpts = document.getElementById("aiOptions");
+      aiOpts.style.display = state.shiftMode === "ai_optimize" ? "block" : "none";
+    }
+
+    function updateSettings() {
+      state.shiftMode = document.getElementById("shiftMode").value;
+      state.timePreference = document.getElementById("timePreference").value;
+      state.allowMultiplePerDay = document.getElementById("allowMultiplePerDay").value === "true";
+      state.year = parseInt(document.getElementById("targetYear").value) || 2026;
+      state.month = parseInt(document.getElementById("targetMonth").value) || 10;
+      state.maxMonthlySalary = parseInt(document.getElementById("maxMonthlySalary").value) || 0;
+      toggleAiOptions();
+      saveLocalStorage();
+    }
+
+    loadLocalStorage();
+
+    function timeToMin(str) {
+      let p = str.split(":");
+      return parseInt(p[0]) * 60 + parseInt(p[1]);
+    }
+    function minToTime(min) {
+      let h = Math.floor(min / 60);
+      let m = min % 60;
+      return String(h).padStart(2, '0') + ":" + String(m).padStart(2, '0');
+    }
+    function ceil15(min) { return Math.ceil(min / 15) * 15; }
+    function floor15(min) { return Math.floor(min / 15) * 15; }
+
+    function calculateAndRender() {
+      updateSettings();
+      let year = state.year;
+      let month = state.month;
+      let firstDay = new Date(year, month - 1, 1).getDay();
+      let daysInMonth = new Date(year, month, 0).getDate();
+
+      let dailyShifts = {};
+      let jobStats = {};
+      state.jobs.forEach(j => jobStats[j.name] = { minutes: 0, salary: 0 });
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        let dateObj = new Date(year, month - 1, d);
+        let dayOfWeek = dateObj.getDay();
+        let offInfo = state.offDays[d];
+
+        if (offInfo && offInfo.type === "all") {
+          dailyShifts[d] = { isWork: false, offReason: offInfo.name || "休み", totalSalary: 0, shifts: [], classCount: 0, eventCount: 0 };
+          continue;
+        }
+
+        let openMin = 360;
+        let closeMin = 1380;
+        let timeLine = new Array(closeMin - openMin).fill(true);
+        let classCount = 0;
+        let eventCount = 0;
+
+        if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+          for (let p = 1; p <= state.periodTimes.length; p++) {
+            if (state.timetable.includes(`${dayOfWeek}_${p}`)) {
+              classCount++;
+              let pTime = state.periodTimes[p - 1];
+              let sMin = timeToMin(pTime.start);
+              let eMin = timeToMin(pTime.end);
+              let ngStart = Math.max(openMin, sMin - 60);
+              let ngEnd = Math.min(closeMin, eMin + 60);
+              for (let m = ngStart; m < ngEnd; m++) timeLine[m - openMin] = false;
+            }
+          }
+        }
+
+        let freeBlocks = [];
+        let currStart = null;
+        for (let m = 0; m <= timeLine.length; m++) {
+          if (m < timeLine.length && timeLine[m]) {
+            if (currStart === null) currStart = m;
+          } else {
+            if (currStart !== null) {
+              let s = ceil15(openMin + currStart);
+              let e = floor15(openMin + m);
+              if (e - s >= 120) freeBlocks.push({ start: s, end: e });
+              currStart = null;
+            }
+          }
+        }
+
+        let dayShifts = [];
+        let daySalary = 0;
+        let usedJobsInDay = new Set();
+
+        for (let block of freeBlocks) {
+          if (!state.allowMultiplePerDay && usedJobsInDay.size > 0 && state.shiftMode === "ai_optimize") break;
+
+          let bestJob = null;
+          let maxScore = -99999;
+          let fitStart = 0, fitEnd = 0;
+
+          for (let job of state.jobs) {
+            if (usedJobsInDay.has(job.name)) continue;
+            let jOpen = timeToMin(job.openTime);
+            let jClose = timeToMin(job.closeTime);
+            let s = Math.max(block.start, jOpen);
+            let e = Math.min(block.end, jClose);
+
+            if (e - s >= 120) {
+              let prefScore = 0;
+              if (state.shiftMode === "ai_optimize") {
+                if (state.timePreference === "morning" && s >= 720) prefScore -= 5000;
+                if (state.timePreference === "night" && s < 720) prefScore -= 10000;
+              }
+              let totalScore = (e - s) + prefScore;
+              if (totalScore > maxScore) {
+                if (e - s > 540) e = s + 540;
+                maxScore = totalScore;
+                bestJob = job;
+                fitStart = s;
+                fitEnd = e;
+              }
+            }
+          }
+
+          if (bestJob && state.shiftMode === "ai_optimize" && state.timePreference === "night" && fitStart < 720) continue;
+
+          if (bestJob && (fitEnd - fitStart >= 120)) {
+            usedJobsInDay.add(bestJob.name);
+            let totalBoundMin = fitEnd - fitStart;
+            let breakMin = totalBoundMin > 330 ? 60 : 0;
+            let actualWorkMin = totalBoundMin - breakMin;
+            let workRatio = actualWorkMin / totalBoundMin;
+            let sSalary = 0;
+            for (let m = fitStart; m < fitEnd; m += 15) {
+              let isPremium = (m >= 360 && m < 540) || (m >= 1320 && m < 1380);
+              let rate = isPremium ? bestJob.wage * 1.25 : bestJob.wage;
+              sSalary += (rate * 0.25) * workRatio;
+            }
+            daySalary += sSalary;
+            dayShifts.push({
+              jobName: bestJob.name,
+              startStr: minToTime(fitStart),
+              endStr: minToTime(fitEnd),
+              actualWorkMin: actualWorkMin,
+              breakMin: breakMin,
+              shiftSalary: sSalary,
+              isSuggestRemove: false
+            });
+            if (jobStats[bestJob.name]) {
+              jobStats[bestJob.name].minutes += actualWorkMin;
+              jobStats[bestJob.name].salary += sSalary;
+            }
+          }
+        }
+
+        dailyShifts[d] = {
+          isWork: dayShifts.length > 0,
+          totalSalary: daySalary,
+          shifts: dayShifts,
+          offReason: "休み",
+          classCount: classCount,
+          eventCount: eventCount
+        };
+      }
+
+      // 上限超過チェック
+      let totalMonthSalary = 0;
+      for (let d = 1; d <= daysInMonth; d++) {
+        if (dailyShifts[d].isWork) totalMonthSalary += dailyShifts[d].totalSalary;
+      }
+
+      let isExceeded = state.maxMonthlySalary > 0 && totalMonthSalary > state.maxMonthlySalary;
+      let totalAdjustedSalary = totalMonthSalary;
+      let totalOriginalMinutes = 0, totalAdjustedMinutes = 0;
+      let suggestions = [];
+
+      if (isExceeded) {
+        let excessAmount = totalMonthSalary - state.maxMonthlySalary;
+        let candidates = [];
+        for (let d = 1; d <= daysInMonth; d++) {
+          let ds = dailyShifts[d];
+          if (!ds.isWork) continue;
+          for (let sIdx = 0; sIdx < ds.shifts.length; sIdx++) {
+            candidates.push({ day: d, shiftIdx: sIdx, shift: ds.shifts[sIdx], aiScore: ds.shifts[sIdx].actualWorkMin });
+          }
+        }
+        candidates.sort((a, b) => b.aiScore - a.aiScore);
+        let reducedTemp = 0;
+        for (let c of candidates) {
+          if (reducedTemp >= excessAmount) break;
+          c.shift.isSuggestRemove = true;
+          reducedTemp += c.shift.shiftSalary;
+          suggestions.push({ day: c.day, name: c.shift.jobName, time: `${c.shift.startStr}-${c.shift.endStr}`, salary: Math.floor(c.shift.shiftSalary) });
+        }
+      }
+
+      let origCells = "";
+      let adjCells = "";
+      const dayNames = ["SUN","MON","TUE","WED","THU","FRI","SAT"];
+      let headerHtml = dayNames.map((n, idx) => `<div class="text-center font-bold text-[10px] py-1 ${idx===0?'text-red-500':idx===6?'text-blue-500':'text-gray-500'}">${n}</div>`).join("");
+
+      for (let i = 0; i < firstDay; i++) {
+        origCells += `<div class="bg-gray-50 min-h-[70px] p-1"></div>`;
+        adjCells += `<div class="bg-gray-50 min-h-[70px] p-1"></div>`;
+      }
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        let dateObj = new Date(year, month - 1, d);
+        let dow = dateObj.getDay();
+        let ds = dailyShifts[d];
+        let numColor = dow === 0 ? 'text-red-500' : dow === 6 ? 'text-blue-500' : 'text-gray-800';
+        let cellHead = `<div class="font-bold text-xs ${numColor}">${d}</div>`;
+
+        let origContent = cellHead;
+        let adjContent = cellHead;
+        let hasAdjWork = false;
+
+        if (ds.isWork) {
+          ds.shifts.forEach(s => {
+            totalOriginalMinutes += s.actualWorkMin;
+            let h = (s.actualWorkMin / 60).toFixed(1);
+            if (s.isSuggestRemove) {
+              origContent += `<div class="bg-orange-50 border border-dashed border-orange-300 text-orange-700 p-1 rounded text-[8px] mt-1 font-bold">${s.startStr}-${s.endStr} (${h}h)<br><span class="bg-orange-500 text-white px-1 rounded text-[6px]">⚠️省き候補</span></div>`;
+            } else {
+              origContent += `<div class="bg-red-50 text-red-700 p-1 rounded text-[8px] mt-1 font-bold">${s.startStr}-${s.endStr} (${h}h)</div>`;
+            }
+            if (!s.isSuggestRemove) {
+              hasAdjWork = true;
+              totalAdjustedMinutes += s.actualWorkMin;
+              adjContent += `<div class="bg-blue-50 border border-blue-200 text-blue-900 p-1 rounded text-[8px] mt-1 font-bold">${s.startStr}-${s.endStr} (${h}h)</div>`;
+            }
+          });
+        }
+        if (!ds.isWork) origContent += `<div class="text-gray-400 text-center text-[10px] font-bold mt-2">${ds.offReason}</div>`;
+        if (!hasAdjWork) adjContent += `<div class="text-gray-400 text-center text-[10px] font-bold mt-2">${ds.offReason}</div>`;
+
+        origCells += `<div class="bg-white min-h-[70px] p-1 border border-gray-100">${origContent}</div>`;
+        adjCells += `<div class="bg-white min-h-[70px] p-1 border border-gray-100">${adjContent}</div>`;
+      }
+
+      if (isExceeded) {
+        totalAdjustedSalary = 0;
+        for (let d = 1; d <= daysInMonth; d++) {
+          ds = dailyShifts[d];
+          ds.shifts.forEach(s => { if (!s.isSuggestRemove) totalAdjustedSalary += s.shiftSalary; });
+        }
+      }
+
+      let finalSal = Math.floor(isExceeded ? totalAdjustedSalary : totalMonthSalary).toLocaleString();
+
+      let html = `
+        <div class="bg-white rounded-xl shadow-sm p-4 text-center">
+          <div class="text-sm font-bold text-gray-600">${year}年 ${month}月 予想月収</div>
+          <div class="text-2xl font-extrabold text-blue-600 mt-1">約 ${finalSal} 円</div>
+        </div>
+      `;
+
+      if (isExceeded) {
+        let suggList = suggestions.map(s => `<li class="text-xs text-amber-800 mb-1"><b>${s.day}日 (${s.time})</b> - 約 ${s.salary.toLocaleString()}円</li>`).join("");
+        html += `
+          <div class="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs">
+            <div class="font-bold text-amber-900 mb-1">⚠️ 上限月収（${state.maxMonthlySalary.toLocaleString()}円）を超過しています</div>
+            <ul class="list-disc pl-4 mt-2">${suggList}</ul>
+          </div>
+          <div class="font-bold text-sm text-gray-800 mt-4 mb-2">📅 1. 原案カレンダー</div>
+          <div class="grid grid-cols-7 gap-1 bg-gray-200 p-1 rounded-lg">${headerHtml}${origCells}</div>
+          <div class="font-bold text-sm text-gray-800 mt-6 mb-2">✨ 2. 上限内調整済みカレンダー</div>
+        `;
+      }
+
+      html += `<div class="grid grid-cols-7 gap-1 bg-gray-200 p-1 rounded-lg">${headerHtml}${adjCells}</div>`;
+
+      document.getElementById("resultArea").innerHTML = html;
+    }
+  </script>
+</body>
+</html>
