@@ -11,8 +11,8 @@ let defaultState = {
   month: 10,
   isMultipleJobs: false,
   maxMonthlySalary: 0,
-  shiftMode: "ai_optimize", // デフォルトをAI最適化に
-  timePreference: "night",  // デフォルト夜メイン
+  shiftMode: "ai_optimize",
+  timePreference: "night",
   allowMultiplePerDay: false,
   jobs: [
     { name: "バイトA", wage: 1000, openTime: "06:00", closeTime: "23:00" }
@@ -74,7 +74,6 @@ async function showTable() {
   titleCell.titleFont = Font.boldSystemFont(18);
   table.addRow(titleRow);
 
-  // 0. 動作モードの選択
   addRowHeader(table, "0. シフト生成モードの選択");
   let modeSelectRow = new UITableRow();
   modeSelectRow.dismissOnSelect = false;
@@ -112,7 +111,6 @@ async function showTable() {
     table.addRow(qRow);
   }
 
-  // 1. 基本設定
   addRowHeader(table, "1. 基本設定＆月収上限・対象月");
 
   let monthRow = new UITableRow();
@@ -171,7 +169,6 @@ async function showTable() {
   };
   table.addRow(maxSalRow);
 
-  // 2. バイト先の設定
   addRowHeader(table, "2. バイト先の設定");
   for (let jIdx = 0; jIdx < state.jobs.length; jIdx++) {
     let job = state.jobs[jIdx];
@@ -222,7 +219,6 @@ async function showTable() {
     table.addRow(addJobRow);
   }
 
-  // 3. 授業コマ標準時間＆時間割
   addRowHeader(table, "3. 授業時間帯の設定＆1週間時間割");
   let editPTimeRow = new UITableRow();
   editPTimeRow.addText("⚙️ 授業コマの時間帯を変更", "1限〜5限の開始・終了時刻");
@@ -263,7 +259,6 @@ async function showTable() {
     table.addRow(row);
   }
 
-  // 4. 休みたい日・用事
   addRowHeader(table, "4. 休みたい日・用事の設定");
   let addAllRow = new UITableRow();
   addAllRow.addText("＋ 終日休みを追加", "");
@@ -331,7 +326,6 @@ async function showTable() {
     table.addRow(row);
   }
 
-  // 5. 計算＆表示
   addRowHeader(table, "5. カレンダー出力");
   let calcRow = new UITableRow();
   let calcBtn = calcRow.addText("📅 シフトカレンダーを表示");
@@ -403,7 +397,6 @@ function minToTime(min) {
 function ceil15(min) { return Math.ceil(min / 15) * 15; }
 function floor15(min) { return Math.floor(min / 15) * 15; }
 
-// === 自動計算＆カレンダー生成 ===
 async function generateCalendarView() {
   let year = state.year;
   let month = state.month;
@@ -426,13 +419,12 @@ async function generateCalendarView() {
       continue;
     }
 
-    let openMin = 360;  // 06:00
-    let closeMin = 1380; // 23:00
+    let openMin = 360;
+    let closeMin = 1380;
     let timeLine = new Array(closeMin - openMin).fill(true);
     let classCount = 0;
     let eventCount = 0;
 
-    // 授業＋前後1時間除外
     if (dayOfWeek >= 1 && dayOfWeek <= 5) {
       for (let p = 1; p <= state.periodTimes.length; p++) {
         if (state.timetable.includes(`${dayOfWeek}_${p}`)) {
@@ -447,7 +439,6 @@ async function generateCalendarView() {
       }
     }
 
-    // 個人予定＋前後1時間除外
     if (offInfo && offInfo.intervals) {
       for (let inv of offInfo.intervals) {
         eventCount++;
@@ -459,7 +450,6 @@ async function generateCalendarView() {
       }
     }
 
-    // 空きブロック抽出 (2時間未満除外)
     let freeBlocks = [];
     let currStart = null;
     for (let m = 0; m <= timeLine.length; m++) {
@@ -499,14 +489,13 @@ async function generateCalendarView() {
         let e = Math.min(block.end, jClose);
 
         if (e - s >= 120) {
-          // AI最適化モードの嗜好スコアリング（夜メインなら朝6〜12時を大きくマイナス評価して避ける）
           let prefScore = 0;
           if (state.shiftMode === "ai_optimize") {
             if (state.timePreference === "morning") {
               if (s >= 720) prefScore -= 5000;
             } else if (state.timePreference === "night") {
               if (s < 720) {
-                prefScore -= 10000; 
+                prefScore -= 10000;
               }
             }
           }
@@ -572,7 +561,6 @@ async function generateCalendarView() {
     };
   }
 
-  // 6連勤制限チェック
   let consecutive = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     if (dailyShifts[d].isWork) {
@@ -602,7 +590,6 @@ async function generateCalendarView() {
     }
   }
 
-  // 月収計算とAI削減提案ロジック
   let totalMonthSalary = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     if (dailyShifts[d].isWork) totalMonthSalary += dailyShifts[d].totalSalary;
