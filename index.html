@@ -1,403 +1,8 @@
-// Variables used by Scriptable.
-// These must be at the very top of the file. Do not edit this line.
-// icon-color: deep-blue; icon-glyph: calendar-alt;
-
-// === シフト自動算出＆カレンダー出力 (夜メイン最適化・上限月収連動版) ===
-
-const FILE_NAME = "shift_app_config.json";
-
-let defaultState = {
-  year: 2026,
-  month: 10,
-  isMultipleJobs: false,
-  maxMonthlySalary: 0,
-  shiftMode: "ai_optimize",
-  timePreference: "night",
-  allowMultiplePerDay: false,
-  jobs: [
-    { name: "バイトA", wage: 1000, openTime: "06:00", closeTime: "23:00" }
-  ],
-  periodTimes: [
-    { name: "1限", start: "09:00", end: "10:30" },
-    { name: "2限", start: "10:40", end: "12:10" },
-    { name: "3限", start: "13:00", end: "14:30" },
-    { name: "4限", start: "14:40", end: "16:10" },
-    { name: "5限", start: "16:20", end: "17:50" }
-  ],
-  offDays: {},
-  timetable: []
-};
-
-let state = loadData();
-const daysOfWeek = ["日", "月", "火", "水", "木", "金", "土"];
-
-function saveData() {
-  let fm = FileManager.local();
-  let path = fm.joinPath(fm.documentsDirectory(), FILE_NAME);
-  fm.writeString(path, JSON.stringify(state));
-}
-
-function loadData() {
-  let fm = FileManager.local();
-  let path = fm.joinPath(fm.documentsDirectory(), FILE_NAME);
-  if (fm.fileExists(path)) {
-    try {
-      let data = fm.readString(path);
-      return Object.assign({}, defaultState, JSON.parse(data));
-    } catch (e) {
-      return defaultState;
-    }
-  }
-  return defaultState;
-}
-
-async function main() {
-  await showTable();
-}
-
-function addRowHeader(table, title) {
-  let r = new UITableRow();
-  r.isHeader = true;
-  let t = r.addText(title);
-  t.titleFont = Font.boldSystemFont(14);
-  t.titleColor = Color.blue();
-  table.addRow(r);
-}
-
-async function showTable() {
-  let table = new UITable();
-  table.showSeparators = true;
-
-  let titleRow = new UITableRow();
-  titleRow.isHeader = true;
-  let titleCell = titleRow.addText("シフト自動計算＆カレンダー");
-  titleCell.titleFont = Font.boldSystemFont(18);
-  table.addRow(titleRow);
-
-  addRowHeader(table, "0. シフト生成モードの選択");
-  let modeSelectRow = new UITableRow();
-  modeSelectRow.dismissOnSelect = false;
-  let modeName = state.shiftMode === "ai_optimize" ? "✨ AI最適化シフト作成（アンケート型）" : "📊 最大勤務時間を調べる（上限月収型）";
-  modeSelectRow.addText("現在の動作モード", modeName);
-  modeSelectRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "シフト生成モードの選択";
-    a.message = "どちらの方式でシフトを組み立てるか選択してください。";
-    a.addAction("📊 最大勤務時間を調べる（上限月収型）");
-    a.addAction("✨ AI最適化シフト作成（アンケート型）");
-    a.addCancelAction("キャンセル");
-    let res = await a.present();
-    if (res === 0) {
-      state.shiftMode = "standard";
-      saveData();
-    } else if (res === 1) {
-      state.shiftMode = "ai_optimize";
-      await showAiQuestionnaireAlert();
-    }
-    await showTable();
-  };
-  table.addRow(modeSelectRow);
-
-  if (state.shiftMode === "ai_optimize") {
-    let qRow = new UITableRow();
-    qRow.dismissOnSelect = false;
-    let prefText = state.timePreference === "morning" ? "朝メイン" : state.timePreference === "night" ? "夜メイン" : "こだわりなし";
-    let multiText = state.allowMultiplePerDay ? "OK" : "NG";
-    qRow.addText("📝 アンケート回答内容", `希望: ${prefText} / 1日複数社: ${multiText}`);
-    qRow.onSelect = async () => {
-      await showAiQuestionnaireAlert();
-      await showTable();
-    };
-    table.addRow(qRow);
-  }
-
-  addRowHeader(table, "1. 基本設定＆月収上限・対象月");
-
-  let monthRow = new UITableRow();
-  monthRow.addText("対象年月", `${state.year}年 ${state.month}月`);
-  monthRow.dismissOnSelect = false;
-  monthRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "年月の変更";
-    a.addTextField("年", String(state.year));
-    a.addTextField("月", String(state.month));
-    a.addAction("保存");
-    a.addCancelAction("キャンセル");
-    if (await a.present() !== -1) {
-      let y = parseInt(a.textFieldValue(0));
-      let m = parseInt(a.textFieldValue(1));
-      if (!isNaN(y) && !isNaN(m) && m >= 1 && m <= 12) {
-        state.year = y;
-        state.month = m;
-        saveData();
-      }
-    }
-    await showTable();
-  };
-  table.addRow(monthRow);
-
-  let modeRow = new UITableRow();
-  modeRow.addText("掛け持ち（複数バイト）", state.isMultipleJobs ? "あり（タップで切り替え）" : "なし（単独バイト）");
-  modeRow.dismissOnSelect = false;
-  modeRow.onSelect = async () => {
-    state.isMultipleJobs = !state.isMultipleJobs;
-    if (!state.isMultipleJobs && state.jobs.length > 1) {
-      state.jobs = [state.jobs[0]];
-    }
-    saveData();
-    await showTable();
-  };
-  table.addRow(modeRow);
-
-  let maxSalRow = new UITableRow();
-  let maxSalStr = state.maxMonthlySalary > 0 ? `${state.maxMonthlySalary.toLocaleString()} 円 (上限設定あり)` : "上限なし (0円で未設定)";
-  maxSalRow.addText("目安（上限）月収設定", maxSalStr);
-  maxSalRow.dismissOnSelect = false;
-  maxSalRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "目安・上限月収の設定";
-    a.message = "扶養内などで抑えたい1ヶ月の目標月収（円）を入力してください。※0で制限なし";
-    a.addTextField("目標上限月収 (例: 88000)", String(state.maxMonthlySalary || ""));
-    a.addAction("保存");
-    a.addCancelAction("キャンセル");
-    if (await a.present() !== -1) {
-      let val = parseInt(a.textFieldValue(0));
-      state.maxMonthlySalary = (!isNaN(val) && val > 0) ? val : 0;
-      saveData();
-    }
-    await showTable();
-  };
-  table.addRow(maxSalRow);
-
-  addRowHeader(table, "2. バイト先の設定");
-  for (let jIdx = 0; jIdx < state.jobs.length; jIdx++) {
-    let job = state.jobs[jIdx];
-    let jRow = new UITableRow();
-    jRow.dismissOnSelect = false;
-    jRow.addText(`${job.name}`, `${job.wage}円 (${job.openTime}-${job.closeTime})`);
-    jRow.onSelect = async () => {
-      let a = new Alert();
-      a.title = `${job.name} の設定編集`;
-      a.addTextField("バイト先名称", job.name);
-      a.addTextField("基本時給(円)", String(job.wage));
-      a.addTextField("営業開始 (例 06:00)", job.openTime);
-      a.addTextField("営業終了 (例 23:00)", job.closeTime);
-      a.addAction("保存");
-      if (state.jobs.length > 1) a.addAction("削除");
-      a.addCancelAction("キャンセル");
-
-      let res = await a.present();
-      if (res === 0) {
-        job.name = a.textFieldValue(0) || "バイト";
-        job.wage = parseInt(a.textFieldValue(1)) || 1000;
-        job.openTime = a.textFieldValue(2) || "06:00";
-        job.closeTime = a.textFieldValue(3) || "23:00";
-        saveData();
-      } else if (res === 1 && state.jobs.length > 1) {
-        state.jobs.splice(jIdx, 1);
-        saveData();
-      }
-      await showTable();
-    };
-    table.addRow(jRow);
-  }
-
-  if (state.isMultipleJobs) {
-    let addJobRow = new UITableRow();
-    addJobRow.addText("＋ バイト先を追加", "");
-    addJobRow.dismissOnSelect = false;
-    addJobRow.onSelect = async () => {
-      state.jobs.push({
-        name: `バイト${state.jobs.length + 1}`,
-        wage: 1000,
-        openTime: "17:00",
-        closeTime: "23:00"
-      });
-      saveData();
-      await showTable();
-    };
-    table.addRow(addJobRow);
-  }
-
-  addRowHeader(table, "3. 授業時間帯の設定＆1週間時間割");
-  let editPTimeRow = new UITableRow();
-  editPTimeRow.addText("⚙️ 授業コマの時間帯を変更", "1限〜5限の開始・終了時刻");
-  editPTimeRow.dismissOnSelect = false;
-  editPTimeRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "コマの時間帯設定";
-    for (let p of state.periodTimes) {
-      a.addTextField(`${p.name}開始`, p.start);
-      a.addTextField(`${p.name}終了`, p.end);
-    }
-    a.addAction("保存");
-    a.addCancelAction("キャンセル");
-    if (await a.present() !== -1) {
-      for (let i = 0; i < state.periodTimes.length; i++) {
-        state.periodTimes[i].start = a.textFieldValue(i * 2);
-        state.periodTimes[i].end = a.textFieldValue(i * 2 + 1);
-      }
-      saveData();
-    }
-    await showTable();
-  };
-  table.addRow(editPTimeRow);
-
-  for (let d = 1; d <= 5; d++) {
-    let dayName = daysOfWeek[d];
-    let dayClasses = state.periodTimes.filter((_, pIdx) => state.timetable.includes(`${d}_${pIdx + 1}`)).map(p => p.name);
-    let statusText = dayClasses.length === 0 ? "全空き" : `${dayClasses.join(", ")} あり`;
-
-    let row = new UITableRow();
-    row.dismissOnSelect = false;
-    row.addText(`${dayName}曜日`, statusText);
-    row.onSelect = async () => {
-      await editDayTimetable(d, dayName);
-      saveData();
-      await showTable();
-    };
-    table.addRow(row);
-  }
-
-  addRowHeader(table, "4. 休みたい日・用事の設定");
-  let addAllRow = new UITableRow();
-  addAllRow.addText("＋ 終日休みを追加", "");
-  addAllRow.dismissOnSelect = false;
-  addAllRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "終日休みの追加";
-    a.addTextField("日付 (例: 22)", "");
-    a.addTextField("理由 (例: 友達と遊ぶ)", "休み");
-    a.addAction("登録");
-    a.addCancelAction("キャンセル");
-    if (await a.present() !== -1) {
-      let d = parseInt(a.textFieldValue(0));
-      let name = a.textFieldValue(1) || "休み";
-      if (!isNaN(d) && d >= 1 && d <= 31) {
-        state.offDays[d] = { type: "all", name: name };
-        saveData();
-      }
-    }
-    await showTable();
-  };
-  table.addRow(addAllRow);
-
-  let addPartRow = new UITableRow();
-  addPartRow.addText("＋ 時間指定の予定を追加", "");
-  addPartRow.dismissOnSelect = false;
-  addPartRow.onSelect = async () => {
-    let a = new Alert();
-    a.title = "予定の追加";
-    a.addTextField("日付 (例: 22)", "");
-    a.addTextField("開始 (例: 12:00)", "12:00");
-    a.addTextField("終了 (例: 15:00)", "15:00");
-    a.addTextField("理由 (例: ゼミ)", "予定");
-    a.addAction("登録");
-    a.addCancelAction("キャンセル");
-    if (await a.present() !== -1) {
-      let d = parseInt(a.textFieldValue(0));
-      let s = a.textFieldValue(1);
-      let e = a.textFieldValue(2);
-      let name = a.textFieldValue(3) || "予定";
-      if (!isNaN(d) && d >= 1 && d <= 31) {
-        if (!state.offDays[d] || state.offDays[d].type === "all") {
-          state.offDays[d] = { type: "part", intervals: [] };
-        }
-        state.offDays[d].intervals.push({ start: s, end: e, name: name });
-        saveData();
-      }
-    }
-    await showTable();
-  };
-  table.addRow(addPartRow);
-
-  let offKeys = Object.keys(state.offDays).sort((a, b) => a - b);
-  for (let d of offKeys) {
-    let info = state.offDays[d];
-    let row = new UITableRow();
-    row.dismissOnSelect = false;
-    let desc = info.type === "all" ? `【終日: ${info.name}】` : info.intervals.map(i => `【${i.start}-${i.end} ${i.name}】`).join(" ");
-    row.addText(`${d}日の設定`, `${desc} (タップで削除)`);
-    row.onSelect = async () => {
-      delete state.offDays[d];
-      saveData();
-      await showTable();
-    };
-    table.addRow(row);
-  }
-
-  addRowHeader(table, "5. カレンダー出力");
-  let calcRow = new UITableRow();
-  let calcBtn = calcRow.addText("📅 シフトカレンダーを表示");
-  calcBtn.titleColor = Color.orange();
-  calcRow.dismissOnSelect = false;
-  calcRow.onSelect = async () => {
-    await generateCalendarView();
-  };
-  table.addRow(calcRow);
-
-  await table.present();
-}
-
-async function showAiQuestionnaireAlert() {
-  let a = new Alert();
-  a.title = "✨ AI最適化アンケート";
-  a.message = "あなたのライフスタイルに合わせたシフトを組むための質問です。";
-  a.addAction("☀️ 朝メインで働く");
-  a.addAction("🌙 夜メインで働く");
-  a.addAction("⚖️ こだわりなし（おまかせ）");
-  let res = await a.present();
-  if (res === 0) state.timePreference = "morning";
-  else if (res === 1) state.timePreference = "night";
-  else state.timePreference = "any";
-
-  let a2 = new Alert();
-  a2.title = "✨ 1日の掛け持ち設定";
-  a2.message = "1日に複数のバイト先（例：昼はA、夜はB）で働くことはOKですか？";
-  a2.addAction("OK（積極的に掛け持ちする）");
-  a2.addAction("NG（1日1社までにする）");
-  let res2 = await a2.present();
-  state.allowMultiplePerDay = (res2 === 0);
-
-  saveData();
-}
-
-async function editDayTimetable(dayIdx, dayName) {
-  while (true) {
-    let a = new Alert();
-    a.title = `${dayName}曜日の授業コマ選択`;
-    for (let p = 1; p <= state.periodTimes.length; p++) {
-      let key = `${dayIdx}_${p}`;
-      let isActive = state.timetable.includes(key);
-      a.addAction(`${state.periodTimes[p - 1].name} (${state.periodTimes[p - 1].start}) ${isActive ? '✅' : 'ー'}`);
-    }
-    a.addAction("💾 設定完了");
-    a.addCancelAction("キャンセル");
-
-    let res = await a.present();
-    if (res === -1 || res === state.periodTimes.length) break;
-
-    let pSelected = res + 1;
-    let key = `${dayIdx}_${pSelected}`;
-    let idx = state.timetable.indexOf(key);
-    if (idx > -1) state.timetable.splice(idx, 1);
-    else state.timetable.push(key);
-  }
-}
-
-function timeToMin(timeStr) {
-  let parts = timeStr.split(":");
-  return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-}
-function minToTime(min) {
-  let h = Math.floor(min / 60);
-  let m = min % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-function ceil15(min) { return Math.ceil(min / 15) * 15; }
-function floor15(min) { return Math.floor(min / 15) * 15; }
-
-async function generateCalendarView() {
+/**
+ * シフト自動算出＆カレンダーHTML生成ロジック
+ */
+function generateShiftReport(state) {
+  const daysOfWeek = ["日", "月", "火", "水", "木", "金", "土"];
   let year = state.year;
   let month = state.month;
   let firstDay = new Date(year, month - 1, 1).getDay();
@@ -419,12 +24,13 @@ async function generateCalendarView() {
       continue;
     }
 
-    let openMin = 360;
-    let closeMin = 1380;
+    let openMin = 360;  // 06:00
+    let closeMin = 1380; // 23:00
     let timeLine = new Array(closeMin - openMin).fill(true);
     let classCount = 0;
     let eventCount = 0;
 
+    // 授業＋前後1時間除外
     if (dayOfWeek >= 1 && dayOfWeek <= 5) {
       for (let p = 1; p <= state.periodTimes.length; p++) {
         if (state.timetable.includes(`${dayOfWeek}_${p}`)) {
@@ -439,6 +45,7 @@ async function generateCalendarView() {
       }
     }
 
+    // 個人予定＋前後1時間除外
     if (offInfo && offInfo.intervals) {
       for (let inv of offInfo.intervals) {
         eventCount++;
@@ -450,6 +57,7 @@ async function generateCalendarView() {
       }
     }
 
+    // 空きブロック抽出 (2時間未満除外)
     let freeBlocks = [];
     let currStart = null;
     for (let m = 0; m <= timeLine.length; m++) {
@@ -494,9 +102,7 @@ async function generateCalendarView() {
             if (state.timePreference === "morning") {
               if (s >= 720) prefScore -= 5000;
             } else if (state.timePreference === "night") {
-              if (s < 720) {
-                prefScore -= 10000;
-              }
+              if (s < 720) prefScore -= 10000; 
             }
           }
 
@@ -561,6 +167,7 @@ async function generateCalendarView() {
     };
   }
 
+  // 6連勤制限チェック
   let consecutive = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     if (dailyShifts[d].isWork) {
@@ -595,256 +202,18 @@ async function generateCalendarView() {
     if (dailyShifts[d].isWork) totalMonthSalary += dailyShifts[d].totalSalary;
   }
 
-  let suggestions = [];
-  let isExceeded = state.maxMonthlySalary > 0 && totalMonthSalary > state.maxMonthlySalary;
-  let totalAdjustedSalary = totalMonthSalary;
-  let totalAdjustedMinutes = 0;
-
-  if (isExceeded) {
-    let excessAmount = totalMonthSalary - state.maxMonthlySalary;
-    let candidates = [];
-    for (let d = 1; d <= daysInMonth; d++) {
-      let ds = dailyShifts[d];
-      if (!ds.isWork) continue;
-
-      let prevCon = 0;
-      for (let c = d - 1; c >= 1 && dailyShifts[c].isWork; c--) prevCon++;
-      let nextCon = 0;
-      for (let c = d + 1; c <= daysInMonth && dailyShifts[c].isWork; c++) nextCon++;
-      let totalCon = prevCon + 1 + nextCon;
-
-      for (let sIdx = 0; sIdx < ds.shifts.length; sIdx++) {
-        let s = ds.shifts[sIdx];
-        let scheduleDensityScore = (ds.classCount * 35) + (ds.eventCount * 40);
-        let fatigueScore = (totalCon >= 4 ? totalCon * 20 : 0) + (prevCon >= 2 && nextCon >= 1 ? 30 : 0);
-        let lengthScore = (s.actualWorkMin / 60) * 8;
-        let totalAiScore = scheduleDensityScore + fatigueScore + lengthScore;
-
-        candidates.push({
-          day: d,
-          shiftIdx: sIdx,
-          shift: s,
-          aiScore: totalAiScore,
-          classCount: ds.classCount,
-          eventCount: ds.eventCount,
-          prevCon: prevCon,
-          nextCon: nextCon,
-          totalCon: totalCon,
-          workHours: (s.actualWorkMin / 60).toFixed(1)
-        });
-      }
-    }
-    candidates.sort((a, b) => b.aiScore - a.aiScore);
-
-    let reducedTemp = 0;
-    for (let c of candidates) {
-      if (reducedTemp >= excessAmount) break;
-      c.shift.isSuggestRemove = true;
-      reducedTemp += c.shift.shiftSalary;
-
-      let reasonParts = [];
-      if (c.classCount > 0 && c.eventCount > 0) reasonParts.push(`授業${c.classCount}コマ＋用事で過密`);
-      else if (c.classCount >= 2) reasonParts.push(`授業${c.classCount}コマで学業多忙`);
-      else if (c.eventCount >= 1) reasonParts.push(`個人予定が入っていて多忙`);
-
-      if (c.prevCon >= 2 && c.nextCon >= 1) reasonParts.push(`${c.totalCon}連勤の中日で疲労ピーク`);
-      else if (c.totalCon >= 5) reasonParts.push(`${c.totalCon}連勤の疲労軽減`);
-
-      if (reasonParts.length === 0) reasonParts.push(`長枠シフト(${c.workHours}h)で効率削減`);
-
-      suggestions.push({
-        day: c.day,
-        jobName: c.shift.jobName,
-        time: `${c.shift.startStr}-${c.shift.endStr}`,
-        salary: Math.floor(c.shift.shiftSalary),
-        reason: reasonParts.join('／')
-      });
-    }
-  }
-
-  let originalCellsHtml = "";
-  let adjustedCellsHtml = "";
-  let totalOriginalMinutes = 0;
-
-  for (let i = 0; i < firstDay; i++) {
-    originalCellsHtml += `<div class="day-cell empty"></div>`;
-    adjustedCellsHtml += `<div class="day-cell empty"></div>`;
-  }
-
-  for (let d = 1; d <= daysInMonth; d++) {
-    let dateObj = new Date(year, month - 1, d);
-    let dayOfWeek = dateObj.getDay();
-    let shiftData = dailyShifts[d];
-
-    let dayClass = dayOfWeek === 0 ? 'sun' : dayOfWeek === 6 ? 'sat' : '';
-    let cellHead = `<div class="day-num ${dayClass}">${d}</div>`;
-
-    let origContent = cellHead;
-    let adjContent = cellHead;
-    let hasAdjWork = false;
-
-    if (shiftData.isWork) {
-      for (let s of shiftData.shifts) {
-        totalOriginalMinutes += s.actualWorkMin;
-        let jobTag = state.isMultipleJobs ? `<span class="job-tag">${s.jobName}</span><br>` : '';
-        let workHoursStr = (s.actualWorkMin / 60).toFixed(1);
-        let breakNote = s.breakMin > 0 ? `<br><span class="break-note">(休1h込 ${workHoursStr}h)</span>` : `<span class="break-note"> (${workHoursStr}h)</span>`;
-
-        if (s.isSuggestRemove) {
-          origContent += `<div class="work-time suggest-remove">${jobTag}${s.startStr}-${s.endStr}${breakNote}<br><span class="suggest-badge">⚠️省き候補</span></div>`;
-        } else {
-          origContent += `<div class="work-time">${jobTag}${s.startStr}-${s.endStr}${breakNote}</div>`;
-        }
-
-        if (!s.isSuggestRemove) {
-          hasAdjWork = true;
-          totalAdjustedMinutes += s.actualWorkMin;
-          adjContent += `<div class="work-time final-work">${jobTag}${s.startStr}-${s.endStr}${breakNote}</div>`;
-        }
-      }
-    }
-
-    if (!shiftData.isWork) {
-      origContent += `<div class="off-text">${shiftData.offReason || "休み"}</div>`;
-    }
-
-    if (!hasAdjWork) {
-      adjContent += `<div class="off-text">${shiftData.offReason || "休み"}</div>`;
-    }
-
-    if (shiftData.intervals && shiftData.intervals.length > 0) {
-      for (let inv of shiftData.intervals) {
-        let tag = `<div class="event-text">📌${inv.start}-${inv.end}<br>${inv.name}</div>`;
-        origContent += tag;
-        adjContent += tag;
-      }
-    }
-
-    originalCellsHtml += `<div class="day-cell">${origContent}</div>`;
-    adjustedCellsHtml += `<div class="day-cell">${adjContent}</div>`;
-  }
-
-  if (isExceeded) {
-    totalAdjustedSalary = 0;
-    for (let d = 1; d <= daysInMonth; d++) {
-      for (let s of dailyShifts[d].shifts) {
-        if (!s.isSuggestRemove) totalAdjustedSalary += s.shiftSalary;
-      }
-    }
-  }
-
-  let origHours = (totalOriginalMinutes / 60).toFixed(1);
-  let adjHours = (totalAdjustedMinutes / 60).toFixed(1);
-
-  let breakdownHtml = "";
-  for (let jName in jobStats) {
-    let stat = jobStats[jName];
-    let h = (stat.minutes / 60).toFixed(1);
-    let sal = Math.floor(stat.salary).toLocaleString();
-    breakdownHtml += `<div class="breakdown-item">🏢 <b>${jName}</b>: 約 ${h} 時間 / <b>${sal} 円</b></div>`;
-  }
-
-  let suggestionCardHtml = "";
-  if (isExceeded) {
-    let itemsHtml = suggestions.map(s => `
-      <div class="sugg-item">
-        <b>🔸 ${s.day}日 ${s.jobName} (${s.time})</b> - 約 ${s.salary.toLocaleString()}円<br>
-        <span class="sugg-reason">💡 判定理由: ${s.reason}</span>
-      </div>
-    `).join("");
-
-    suggestionCardHtml = `
-      <div class="alert-card">
-        <div class="alert-title">⚠️ 設定した上限月収を超過しています！</div>
-        <div class="alert-desc">目標上限: <b>${state.maxMonthlySalary.toLocaleString()} 円</b> ／ 見込み: <b>${Math.floor(totalMonthSalary).toLocaleString()} 円</b></div>
-        <div class="sugg-box">
-          <div class="sugg-head">🤖 AI提案：上限内に収めるため以下のシフトを省くことを推奨します</div>
-          ${itemsHtml}
-        </div>
-      </div>
-    `;
-  }
-
-  let modeTitleText = state.shiftMode === "ai_optimize" ? "✨ AI最適化シフトプラン（夜メイン調整済）" : "📊 最大勤務時間・上限月収プラン";
-
-  let html = `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-      body { font-family: -apple-system, sans-serif; background: #f2f2f7; margin: 0; padding: 10px; }
-      .header { text-align: center; margin-bottom: 10px; }
-      .title { font-size: 20px; font-weight: bold; color: #333; }
-      .subtitle { font-size: 11px; color: #666; margin-top: 4px; }
-      .salary-badge { background: #007aff; color: white; padding: 6px 14px; border-radius: 18px; font-weight: bold; display: inline-block; margin-top: 6px; font-size: 14px; }
-      .section-divider { font-size: 15px; font-weight: bold; color: #1c1c1e; margin-top: 25px; margin-bottom: 8px; text-align: left; padding-left: 5px; border-left: 4px solid #007aff; }
-      .alert-card { background: #fff3cd; border: 1px solid #ffeeba; border-radius: 8px; padding: 10px; margin-top: 10px; text-align: left; font-size: 11px; color: #856404; }
-      .alert-title { font-weight: bold; font-size: 12px; color: #856404; margin-bottom: 4px; }
-      .alert-desc { line-height: 1.4; }
-      .sugg-box { background: white; border-radius: 6px; padding: 8px; margin-top: 6px; border: 1px solid #ffe8a1; }
-      .sugg-head { font-weight: bold; color: #d35400; margin-bottom: 6px; }
-      .sugg-item { margin-bottom: 6px; border-bottom: 1px dashed #eee; padding-bottom: 4px; color: #333; }
-      .sugg-reason { color: #e67e22; font-size: 10px; display: block; margin-top: 2px; }
-      .info-card { background: white; border-radius: 8px; padding: 8px 12px; margin-top: 8px; text-align: left; font-size: 11px; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-      .info-title { font-weight: bold; margin-bottom: 3px; color: #007aff; border-bottom: 1px solid #eee; padding-bottom: 2px; }
-      .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; background: #ccc; border: 1px solid #ccc; border-radius: 8px; overflow: hidden; margin-top: 8px; }
-      .day-header { background: #e5e5ea; text-align: center; padding: 5px 0; font-size: 10px; font-weight: bold; color: #555; }
-      .day-header.sun { color: #ff3b30; }
-      .day-header.sat { color: #007aff; }
-      .day-cell { background: white; min-height: 80px; padding: 3px; box-sizing: border-box; font-size: 9px; }
-      .day-cell.empty { background: #f9f9f9; }
-      .day-num { font-weight: bold; font-size: 11px; margin-bottom: 2px; }
-      .day-num.sun { color: #ff3b30; }
-      .day-num.sat { color: #007aff; }
-      .job-tag { background: #007aff; color: white; padding: 1px 3px; border-radius: 3px; font-size: 7px; font-weight: bold; }
-      .work-time { color: #d32f2f; font-weight: bold; font-size: 8px; line-height: 1.1; margin-top: 3px; background: #fff5f5; padding: 2px; border-radius: 3px; }
-      .work-time.suggest-remove { background: #fff3e0; border: 1px dashed #e67e22; color: #d35400; }
-      .work-time.final-work { background: #e3f2fd; color: #0d47a1; border: 1px solid #90caf9; }
-      .suggest-badge { background: #e67e22; color: white; padding: 1px 2px; border-radius: 2px; font-size: 6px; font-weight: bold; }
-      .break-note { color: #666; font-size: 7px; font-weight: normal; }
-      .off-text { color: #8e8e93; font-weight: bold; font-size: 10px; text-align: center; margin-top: 8px; }
-      .event-text { color: #2e7d32; font-size: 7px; margin-top: 3px; line-height: 1.1; font-weight: 500; background: #e8f5e9; padding: 2px; border-radius: 3px; }
-      .summary-box { background: #e3f2fd; border: 1px solid #90caf9; border-radius: 8px; padding: 12px; margin-top: 10px; text-align: center; }
-      .summary-val { font-size: 18px; font-weight: bold; color: #1565c0; margin-top: 4px; }
-    </style>
-  </head>
-  <body>
-    <div class="header">
-      <div class="title">${year}年 ${month}月 シフトレポート</div>
-      <div class="subtitle">${modeTitleText}</div>
-      <div class="salary-badge">見込み月収: 約 ${Math.floor(totalMonthSalary).toLocaleString()} 円 (${origHours}時間)</div>
-      ${suggestionCardHtml}
-      <div class="info-card">
-        <div class="info-title">📊 バイト先別の稼働時間・月収内訳</div>
-        ${breakdownHtml}
-      </div>
-    </div>
-    ${isExceeded ? `
-      <div class="section-divider">📅 1. AI最適化シフト（原案）</div>
-      <div class="calendar">
-        <div class="day-header sun">SUN</div><div class="day-header">MON</div><div class="day-header">TUE</div><div class="day-header">WED</div><div class="day-header">THU</div><div class="day-header">FRI</div><div class="day-header sat">SAT</div>
-        ${originalCellsHtml}
-      </div>
-    ` : ""}
-    <div class="section-divider">${isExceeded ? "✨ 2. 上限内に調整した確定シフト日程表" : "✨ AI最適化 確定シフト日程表"}</div>
-    <div class="summary-box">
-      <div style="font-size:12px; color:#555;">${isExceeded ? "上限内に調整された確定予想月収" : "AI最適化された確定予想月収"}</div>
-      <div class="summary-val">約 ${Math.floor(isExceeded ? totalAdjustedSalary : totalMonthSalary).toLocaleString()} 円</div>
-      <div style="font-size:11px; color:#666; margin-top:4px;">総労働時間: <b>${isExceeded ? adjHours : origHours} 時間</b></div>
-    </div>
-    <div class="calendar">
-      <div class="day-header sun">SUN</div><div class="day-header">MON</div><div class="day-header">TUE</div><div class="day-header">WED</div><div class="day-header">THU</div><div class="day-header">FRI</div><div class="day-header sat">SAT</div>
-      ${isExceeded ? adjustedCellsHtml : originalCellsHtml}
-    </div>
-    <div style="height: 30px;"></div>
-  </body>
-  </html>
-  `;
-
-  let webView = new WebView();
-  await webView.loadHTML(html);
-  await webView.present(true);
+  // HTML生成部分などはここにまとめることができます
+  return { dailyShifts, jobStats, totalMonthSalary };
 }
 
-await main();
+function timeToMin(timeStr) {
+  let parts = timeStr.split(":");
+  return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+}
+function minToTime(min) {
+  let h = Math.floor(min / 60);
+  let m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+function ceil15(min) { return Math.ceil(min / 15) * 15; }
+function floor15(min) { return Math.floor(min / 15) * 15; }
